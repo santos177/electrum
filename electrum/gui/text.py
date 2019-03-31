@@ -183,6 +183,16 @@ class ElectrumGui:
         self.stdscr.addstr( 12, 25, _("[Clear]"), curses.A_REVERSE if self.pos%6==5 else curses.color_pair(2))
         self.maxpos = 6
 
+    def print_send_omni_tokens_tab(self):
+        self.stdscr.clear()
+        self.print_edit_line(3, _("Pay to"), self.str_recipient, 0, 40)
+        self.print_edit_line(5, _("Description"), self.str_description, 1, 40)
+        self.print_edit_line(7, _("Amount"), self.str_amount, 2, 15)
+        self.print_edit_line(9, _("Fee"), self.str_fee, 3, 15)
+        self.stdscr.addstr( 12, 15, _("[Send]"), curses.A_REVERSE if self.pos%6==4 else curses.color_pair(2))
+        self.stdscr.addstr( 12, 25, _("[Clear]"), curses.A_REVERSE if self.pos%6==5 else curses.color_pair(2))
+        self.maxpos = 6
+
     def print_banner(self):
         if self.network and self.network.banner:
             banner = self.network.banner
@@ -286,6 +296,19 @@ class ElectrumGui:
         elif self.pos%6==5:
             if c == 10: self.do_clear()
 
+    def run_send_omni_tokens_tab(self, c):
+        if self.pos%6 == 0:
+            self.str_recipient = self.edit_str(self.str_recipient, c)
+        if self.pos%6 == 1:
+            self.str_description = self.edit_str(self.str_description, c)
+        if self.pos%6 == 2:
+            self.str_amount = self.edit_str(self.str_amount, c, True)
+        elif self.pos%6 == 3:
+            self.str_fee = self.edit_str(self.str_fee, c, True)
+        elif self.pos%6==4:
+            if c == 10: self.do_send_omni_tokens()
+        elif self.pos%6==5:
+            if c == 10: self.do_clear()
 
     def run_receive_tab(self, c):
         if c == 10:
@@ -319,6 +342,7 @@ class ElectrumGui:
                 self.run_tab(3, self.print_addresses, self.run_banner_tab)
                 self.run_tab(4, self.print_contacts, self.run_contacts_tab)
                 self.run_tab(5, self.print_banner, self.run_banner_tab)
+                self.run_tab(6, self.print_send_omni_tokens_tab, self.run_send_omni_tokens_tab)
         except curses.error as e:
             raise Exception("Error with curses. Is your screen too small?") from e
         finally:
@@ -336,6 +360,51 @@ class ElectrumGui:
         self.str_description = ''
 
     def do_send(self):
+        if not is_address(self.str_recipient):
+            self.show_message(_('Invalid Bitcoin address'))
+            return
+        try:
+            amount = int(Decimal(self.str_amount) * COIN)
+        except Exception:
+            self.show_message(_('Invalid Amount'))
+            return
+        try:
+            fee = int(Decimal(self.str_fee) * COIN)
+        except Exception:
+            self.show_message(_('Invalid Fee'))
+            return
+
+        if self.wallet.has_password():
+            password = self.password_dialog()
+            if not password:
+                return
+        else:
+            password = None
+        try:
+            tx = self.wallet.mktx([TxOutput(TYPE_ADDRESS, self.str_recipient, amount)],
+                                  password, self.config, fee)
+        except Exception as e:
+            self.show_message(str(e))
+            return
+
+        if self.str_description:
+            self.wallet.labels[tx.txid()] = self.str_description
+
+        self.show_message(_("Please wait..."), getchar=False)
+        try:
+            self.network.run_from_another_thread(self.network.broadcast_transaction(tx))
+        except TxBroadcastError as e:
+            msg = e.get_message_for_gui()
+            self.show_message(msg)
+        except BestEffortRequestFailed as e:
+            msg = repr(e)
+            self.show_message(msg)
+        else:
+            self.show_message(_('Payment sent.'))
+            self.do_clear()
+            #self.update_contacts_tab()
+
+    def do_send_omni_tokens(self):
         if not is_address(self.str_recipient):
             self.show_message(_('Invalid Bitcoin address'))
             return

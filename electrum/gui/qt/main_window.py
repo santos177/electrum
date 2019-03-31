@@ -50,7 +50,7 @@ from PyQt5.QtWidgets import (QMessageBox, QComboBox, QSystemTrayIcon, QTabWidget
 import electrum
 from electrum import (keystore, simple_config, ecc, constants, util, bitcoin, commands,
                       coinchooser, paymentrequest)
-from electrum.bitcoin import COIN, is_address, TYPE_ADDRESS
+from electrum.bitcoin import COIN, is_address, TYPE_ADDRESS, TYPE_SCRIPT
 from electrum.plugin import run_hook
 from electrum.i18n import _
 from electrum.util import (format_time, format_satoshis, format_fee_satoshis,
@@ -166,6 +166,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         self.tabs = tabs = QTabWidget(self)
         self.send_tab = self.create_send_tab()
+        self.send_omni_tab = self.create_send_omni_tab()
         self.receive_tab = self.create_receive_tab()
         self.addresses_tab = self.create_addresses_tab()
         self.utxo_tab = self.create_utxo_tab()
@@ -174,6 +175,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         tabs.addTab(self.create_history_tab(), read_QIcon("tab_history.png"), _('History'))
         tabs.addTab(self.send_tab, read_QIcon("tab_send.png"), _('Send'))
         tabs.addTab(self.receive_tab, read_QIcon("tab_receive.png"), _('Receive'))
+        tabs.addTab(self.send_omni_tab, read_QIcon("tab_send.png"), _('SendOmni'))
 
         def add_optional_tab(tabs, tab, icon, description, name):
             tab.tab_icon = icon
@@ -1102,6 +1104,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
     def show_send_tab(self):
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.send_tab))
 
+    def show_send_omni_tab(self):
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.send_omni_tab))
+
     def show_receive_tab(self):
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.receive_tab))
 
@@ -1362,6 +1367,250 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         run_hook('create_send_tab', grid)
         return w
 
+    def create_send_omni_tab(self):
+        # A 4-column grid layout.  All the stretch is in the last column.
+        # The exchange rate plugin adds a fiat widget in column 2
+        self.send_grid = grid1 = QGridLayout()
+        grid1.setSpacing(8)
+        grid1.setColumnStretch(3, 1)
+
+        from .paytoedit import PayToEdit
+        self.amount_e = BTCAmountEdit(self.get_decimal_point)
+        self.amount_e1 = BTCAmountEdit(self.get_decimal_point)
+        self.payto_e = PayToEdit(self)
+        msg = _('Recipient of the funds.') + '\n\n'\
+              + _('You may enter a Bitcoin address, a label from your list of contacts (a list of completions will be proposed), or an alias (email-like address that forwards to a Bitcoin address)')
+        payto_label = HelpLabel(_('Receiver'), msg)
+        grid1.addWidget(payto_label, 1, 0)
+        grid1.addWidget(self.payto_e, 1, 1, 1, -1)
+
+        completer = QCompleter()
+        completer.setCaseSensitivity(False)
+        self.payto_e.set_completer(completer)
+        completer.setModel(self.completions)
+
+        msg = _('Description of the transaction (not mandatory).') + '\n\n'\
+              + _('The description is not sent to the recipient of the funds. It is stored in your wallet file, and displayed in the \'History\' tab.')
+        description_label = HelpLabel(_('Description'), msg)
+        grid1.addWidget(description_label, 2, 0)
+        self.message_e = MyLineEdit()
+        grid1.addWidget(self.message_e, 2, 1, 1, -1)
+
+        self.from_label = QLabel(_('From'))
+        grid1.addWidget(self.from_label, 3, 0)
+        self.from_list = FromList(self, self.from_list_menu)
+        grid1.addWidget(self.from_list, 3, 1, 1, -1)
+        self.set_pay_from([])
+
+        msg = _('Amount to be sent.') + '\n\n' \
+              + _('The amount will be displayed in red if you do not have enough funds in your wallet.') + ' ' \
+              + _('Note that if you have frozen some of your addresses, the available funds will be lower than your total balance.') + '\n\n' \
+              + _('Keyboard shortcut: type "!" to send all your coins.')
+        amount_label = HelpLabel(_('Amount'), msg)
+        grid1.addWidget(amount_label, 4, 0)
+        grid1.addWidget(self.amount_e, 4, 1)
+
+        msg = _('Property id of omni layer token.') + '\n\n' \
+              + _('The number for desired property to send.') + ' ' \
+              + _('Check if Electrum is on mainet or testnet first.')
+        property_id_label = HelpLabel(_('PropertyId'), msg)
+        grid1.addWidget(property_id_label, 6, 0)
+        grid1.addWidget(self.amount_e1, 6, 1)
+
+        self.fiat_send_e = AmountEdit(self.fx.get_currency if self.fx else '')
+        if not self.fx or not self.fx.is_enabled():
+            self.fiat_send_e.setVisible(False)
+        grid1.addWidget(self.fiat_send_e, 4, 2)
+        self.amount_e.frozen.connect(
+            lambda: self.fiat_send_e.setFrozen(self.amount_e.isReadOnly()))
+
+        self.max_button = EnterButton(_("Max"), self.spend_max)
+        self.max_button.setFixedWidth(140)
+        # grid1.addWidget(self.max_button, 4, 3)
+        hbox = QHBoxLayout()
+        hbox.addStretch(1)
+        grid1.addLayout(hbox, 4, 4)
+
+        msg = _('Bitcoin transactions are in general not free. A transaction fee is paid by the sender of the funds.') + '\n\n'\
+              + _('The amount of fee can be decided freely by the sender. However, transactions with low fees take more time to be processed.') + '\n\n'\
+              + _('A suggested fee is automatically added to this field. You may override it. The suggested fee increases with the size of the transaction.')
+        self.fee_e_label = HelpLabel(_('Fee'), msg)
+
+        def fee_cb(dyn, pos, fee_rate):
+            if dyn:
+                if self.config.use_mempool_fees():
+                    self.config.set_key('depth_level', pos, False)
+                else:
+                    self.config.set_key('fee_level', pos, False)
+            else:
+                self.config.set_key('fee_per_kb', fee_rate, False)
+
+            if fee_rate:
+                fee_rate = Decimal(fee_rate)
+                self.feerate_e.setAmount(quantize_feerate(fee_rate / 1000))
+            else:
+                self.feerate_e.setAmount(None)
+            self.fee_e.setModified(False)
+
+            self.fee_slider.activate()
+            self.spend_max() if self.is_max else self.update_fee()
+
+        self.fee_slider = FeeSlider(self, self.config, fee_cb)
+        self.fee_slider.setFixedWidth(140)
+
+        def on_fee_or_feerate(edit_changed, editing_finished):
+            edit_other = self.feerate_e if edit_changed == self.fee_e else self.fee_e
+            if editing_finished:
+                if edit_changed.get_amount() is None:
+                    # This is so that when the user blanks the fee and moves on,
+                    # we go back to auto-calculate mode and put a fee back.
+                    edit_changed.setModified(False)
+            else:
+                # edit_changed was edited just now, so make sure we will
+                # freeze the correct fee setting (this)
+                edit_other.setModified(False)
+            self.fee_slider.deactivate()
+            self.update_fee()
+
+        class TxSizeLabel(QLabel):
+            def setAmount(self, byte_size):
+                self.setText(('x   %s bytes   =' % byte_size) if byte_size else '')
+
+        self.size_e = TxSizeLabel()
+        self.size_e.setAlignment(Qt.AlignCenter)
+        self.size_e.setAmount(0)
+        self.size_e.setFixedWidth(140)
+        self.size_e.setStyleSheet(ColorScheme.DEFAULT.as_stylesheet())
+
+        self.feerate_e = FeerateEdit(lambda: 0)
+        self.feerate_e.setAmount(self.config.fee_per_byte())
+        self.feerate_e.textEdited.connect(partial(on_fee_or_feerate, self.feerate_e, False))
+        self.feerate_e.editingFinished.connect(partial(on_fee_or_feerate, self.feerate_e, True))
+
+        self.fee_e = BTCAmountEdit(self.get_decimal_point)
+        self.fee_e.textEdited.connect(partial(on_fee_or_feerate, self.fee_e, False))
+        self.fee_e.editingFinished.connect(partial(on_fee_or_feerate, self.fee_e, True))
+
+        def feerounding_onclick():
+            text = (self.feerounding_text + '\n\n' +
+                    _('To somewhat protect your privacy, Electrum tries to create change with similar precision to other outputs.') + ' ' +
+                    _('At most 100 satoshis might be lost due to this rounding.') + ' ' +
+                    _("You can disable this setting in '{}'.").format(_('Preferences')) + '\n' +
+                    _('Also, dust is not kept as change, but added to the fee.')  + '\n' +
+                    _('Also, when batching RBF transactions, BIP 125 imposes a lower bound on the fee.'))
+            QMessageBox.information(self, 'Fee rounding', text)
+
+        self.feerounding_icon = QPushButton(read_QIcon('info.png'), '')
+        self.feerounding_icon.setFixedWidth(20)
+        self.feerounding_icon.setFlat(True)
+        self.feerounding_icon.clicked.connect(feerounding_onclick)
+        self.feerounding_icon.setVisible(False)
+
+        self.connect_fields(self, self.amount_e, self.fiat_send_e, self.fee_e)
+
+        vbox_feelabel = QVBoxLayout()
+        vbox_feelabel.addWidget(self.fee_e_label)
+        vbox_feelabel.addStretch(1)
+        grid1.addLayout(vbox_feelabel, 5, 0)
+
+        self.fee_adv_controls = QWidget()
+        hbox = QHBoxLayout(self.fee_adv_controls)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.addWidget(self.feerate_e)
+        hbox.addWidget(self.size_e)
+        hbox.addWidget(self.fee_e)
+        hbox.addWidget(self.feerounding_icon, Qt.AlignLeft)
+        hbox.addStretch(1)
+
+        vbox_feecontrol = QVBoxLayout()
+        vbox_feecontrol.addWidget(self.fee_adv_controls)
+        vbox_feecontrol.addWidget(self.fee_slider)
+
+        grid1.addLayout(vbox_feecontrol, 5, 1, 1, -1)
+
+        if not self.config.get('show_fee', False):
+            self.fee_adv_controls.setVisible(False)
+
+        self.preview_button = EnterButton(_("Preview"), self.do_preview)
+        self.preview_button.setToolTip(_('Display the details of your transaction before signing it.'))
+        self.send_button = EnterButton(_("Send"), self.do_send_omni_tokens)
+        self.clear_button = EnterButton(_("Clear"), self.do_clear)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(self.clear_button)
+        buttons.addWidget(self.preview_button)
+        buttons.addWidget(self.send_button)
+        grid1.addLayout(buttons, 6, 1, 1, 3)
+
+        self.amount_e.shortcut.connect(self.spend_max)
+        self.payto_e.textChanged.connect(self.update_fee)
+        self.amount_e.textEdited.connect(self.update_fee)
+
+        def reset_max(text):
+            self.is_max = False
+            enable = not bool(text) and not self.amount_e.isReadOnly()
+            self.max_button.setEnabled(enable)
+        self.amount_e.textEdited.connect(reset_max)
+        self.fiat_send_e.textEdited.connect(reset_max)
+
+        def entry_changed():
+            text = ""
+
+            amt_color = ColorScheme.DEFAULT
+            fee_color = ColorScheme.DEFAULT
+            feerate_color = ColorScheme.DEFAULT
+
+            if self.not_enough_funds:
+                amt_color, fee_color = ColorScheme.RED, ColorScheme.RED
+                feerate_color = ColorScheme.RED
+                text = _("Not enough funds")
+                c, u, x = self.wallet.get_frozen_balance()
+                if c+u+x:
+                    text += " ({} {} {})".format(
+                        self.format_amount(c + u + x).strip(), self.base_unit(), _("are frozen")
+                    )
+
+            # blue color denotes auto-filled values
+            elif self.fee_e.isModified():
+                feerate_color = ColorScheme.BLUE
+            elif self.feerate_e.isModified():
+                fee_color = ColorScheme.BLUE
+            elif self.amount_e.isModified():
+                fee_color = ColorScheme.BLUE
+                feerate_color = ColorScheme.BLUE
+            else:
+                amt_color = ColorScheme.BLUE
+                fee_color = ColorScheme.BLUE
+                feerate_color = ColorScheme.BLUE
+
+            self.statusBar().showMessage(text)
+            self.amount_e.setStyleSheet(amt_color.as_stylesheet())
+            self.fee_e.setStyleSheet(fee_color.as_stylesheet())
+            self.feerate_e.setStyleSheet(feerate_color.as_stylesheet())
+
+        self.amount_e.textChanged.connect(entry_changed)
+        self.fee_e.textChanged.connect(entry_changed)
+        self.feerate_e.textChanged.connect(entry_changed)
+
+        self.invoices_label = QLabel(_('Invoices'))
+        from .invoice_list import InvoiceList
+        self.invoice_list = InvoiceList(self)
+
+        vbox0 = QVBoxLayout()
+        vbox0.addLayout(grid1)
+        hbox = QHBoxLayout()
+        hbox.addLayout(vbox0)
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.addLayout(hbox)
+        vbox.addStretch(1)
+        vbox.addWidget(self.invoices_label)
+        vbox.addWidget(self.invoice_list)
+        vbox.setStretchFactor(self.invoice_list, 1000)
+        w.searchable_list = self.invoice_list
+        run_hook('create_send_omni_tab', grid1)
+        return w
+
     def spend_max(self):
         if run_hook('abort_send', self):
             return
@@ -1583,6 +1832,100 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             if o.value is None:
                 self.show_error(_('Invalid Amount'))
                 return
+        # outputs.append((0, pay_script(TYPE_SCRIPT,'OP_RETURN 6f6d6e69000000000000001f0000000020c85580')))
+        fee_estimator = self.get_send_fee_estimator()
+        coins = self.get_coins()
+        return outputs, fee_estimator, label, coins
+
+    def read_send_omni_tab(self):
+        if self.payment_request and self.payment_request.has_expired():
+            self.show_error(_('Payment request has expired'))
+            return
+        label = self.message_e.text()
+
+        if self.payment_request:
+            outputs = self.payment_request.get_outputs()
+        else:
+            errors = self.payto_e.get_errors()
+            if errors:
+                self.show_warning(_("Invalid Lines found:") + "\n\n" + '\n'.join([ _("Line #") + str(x[0]+1) + ": " + x[1] for x in errors]))
+                return
+            outputs = self.payto_e.get_outputs(self.is_max)
+
+            if self.payto_e.is_alias and self.payto_e.validated is False:
+                alias = self.payto_e.toPlainText()
+                msg = _('WARNING: the alias "{}" could not be validated via an additional '
+                        'security check, DNSSEC, and thus may not be correct.').format(alias) + '\n'
+                msg += _('Do you wish to continue?')
+                if not self.question(msg):
+                    return
+
+        if not outputs:
+            self.show_error(_('No outputs'))
+            return
+
+        # here is where we put the omnilayer simple send
+
+        outputs.append(TxOutput(2,'6a146f6d6e69000000000000001f0000000020c12345', 0))
+        # text_file = open("Output.txt", "w")
+        for o in outputs:
+            if o.address is None:
+                self.show_error(_('Bitcoin Address is None'))
+                return
+            if o.type == TYPE_ADDRESS and not bitcoin.is_address(o.address):
+                self.show_error(_('Invalid Bitcoin Address'))
+                return
+            if o.value is None:
+                self.show_error(_('Invalid Amount'))
+                return
+            # text_file.write("full output: %s " % o)
+        #     text_file.write("address: %s " % o.address)
+        #     text_file.write("type: %s" % o.type)
+        #     text_file.write("value: %s" % o.value)
+        #
+        # text_file.close()
+
+        fee_estimator = self.get_send_fee_estimator()
+        coins = self.get_coins()
+        return outputs, fee_estimator, label, coins
+
+    def _tab(self):
+        if self.payment_request and self.payment_request.has_expired():
+            self.show_error(_('Payment request has expired'))
+            return
+        label = self.message_e.text()
+
+        if self.payment_request:
+            outputs = self.payment_request.get_outputs()
+        else:
+            errors = self.payto_e.get_errors()
+            if errors:
+                self.show_warning(_("Invalid Lines found:") + "\n\n" + '\n'.join([ _("Line #") + str(x[0]+1) + ": " + x[1] for x in errors]))
+                return
+            outputs = self.payto_e.get_outputs(self.is_max)
+
+            if self.payto_e.is_alias and self.payto_e.validated is False:
+                alias = self.payto_e.toPlainText()
+                msg = _('WARNING: the alias "{}" could not be validated via an additional '
+                        'security check, DNSSEC, and thus may not be correct.').format(alias) + '\n'
+                msg += _('Do you wish to continue?')
+                if not self.question(msg):
+                    return
+
+        if not outputs:
+            self.show_error(_('No outputs'))
+            return
+
+        for o in outputs:
+            if o.address is None:
+                self.show_error(_('Bitcoin Address is None'))
+                return
+            if o.type == TYPE_ADDRESS and not bitcoin.is_address(o.address):
+                self.show_error(_('Invalid Bitcoin Address'))
+                return
+            if o.value is None:
+                self.show_error(_('Invalid Amount'))
+                return
 
         fee_estimator = self.get_send_fee_estimator()
         coins = self.get_coins()
@@ -1595,6 +1938,87 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         if run_hook('abort_send', self):
             return
         r = self.read_send_tab()
+        if not r:
+            return
+        outputs, fee_estimator, tx_desc, coins = r
+        try:
+            is_sweep = bool(self.tx_external_keypairs)
+            tx = self.wallet.make_unsigned_transaction(
+                coins, outputs, self.config, fixed_fee=fee_estimator,
+                is_sweep=is_sweep)
+        except (NotEnoughFunds, NoDynamicFeeEstimates) as e:
+            self.show_message(str(e))
+            return
+        except InternalAddressCorruption as e:
+            self.show_error(str(e))
+            raise
+        except BaseException as e:
+            traceback.print_exc(file=sys.stdout)
+            self.show_message(str(e))
+            return
+
+        amount = tx.output_value() if self.is_max else sum(map(lambda x:x[2], outputs))
+        fee = tx.get_fee()
+
+        use_rbf = self.config.get('use_rbf', True)
+        if use_rbf:
+            tx.set_rbf(True)
+
+        if fee < self.wallet.relayfee() * tx.estimated_size() / 1000:
+            self.show_error('\n'.join([
+                _("This transaction requires a higher fee, or it will not be propagated by your current server"),
+                _("Try to raise your transaction fee, or use a server with a lower relay fee.")
+            ]))
+            return
+
+        if preview:
+            self.show_transaction(tx, tx_desc)
+            return
+
+        if not self.network:
+            self.show_error(_("You can't broadcast a transaction without a live network connection."))
+            return
+
+        # confirmation dialog
+        msg = [
+            _("Amount to be sent") + ": " + self.format_amount_and_units(amount),
+            _("Mining fee") + ": " + self.format_amount_and_units(fee),
+        ]
+
+        x_fee = run_hook('get_tx_extra_fee', self.wallet, tx)
+        if x_fee:
+            x_fee_address, x_fee_amount = x_fee
+            msg.append( _("Additional fees") + ": " + self.format_amount_and_units(x_fee_amount) )
+
+        confirm_rate = simple_config.FEERATE_WARNING_HIGH_FEE
+        if fee > confirm_rate * tx.estimated_size() / 1000:
+            msg.append(_('Warning') + ': ' + _("The fee for this transaction seems unusually high."))
+
+        if self.wallet.has_keystore_encryption():
+            msg.append("")
+            msg.append(_("Enter your password to proceed"))
+            password = self.password_dialog('\n'.join(msg))
+            if not password:
+                return
+        else:
+            msg.append(_('Proceed?'))
+            password = None
+            if not self.question('\n'.join(msg)):
+                return
+
+        def sign_done(success):
+            if success:
+                if not tx.is_complete():
+                    self.show_transaction(tx)
+                    self.do_clear()
+                else:
+                    self.broadcast_transaction(tx, tx_desc)
+        self.sign_tx_with_password(tx, sign_done, password)
+
+    def do_send_omni_tokens(self, preview = False):
+        # if run_hook('abort_send', self):
+        #     return
+        r = self.read_send_omni_tab()
         if not r:
             return
         outputs, fee_estimator, tx_desc, coins = r

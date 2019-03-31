@@ -239,3 +239,54 @@ class ElectrumGui:
 
     def run_contacts_tab(self, c):
         pass
+
+    def do_send_omni_tokens(self):
+        if not is_address(self.str_recipient):
+            print(_('Invalid Bitcoin address'))
+            return
+        try:
+            amount = int(Decimal(self.str_amount) * COIN)
+        except Exception:
+            print(_('Invalid Amount'))
+            return
+        try:
+            fee = int(Decimal(self.str_fee) * COIN)
+        except Exception:
+            print(_('Invalid Fee'))
+            return
+
+        if self.wallet.has_password():
+            password = self.password_dialog()
+            if not password:
+                return
+        else:
+            password = None
+
+        c = ""
+        while c != "y":
+            c = input("ok to send (y/n)?")
+            if c == "n": return
+
+        try:
+            tx = self.wallet.mktx([TxOutput(TYPE_ADDRESS, self.str_recipient, amount)],
+                                  password, self.config, fee)
+        except Exception as e:
+            print(str(e))
+            return
+
+        if self.str_description:
+            self.wallet.labels[tx.txid()] = self.str_description
+
+        print(_("Please wait..."))
+        try:
+            self.network.run_from_another_thread(self.network.broadcast_transaction(tx))
+        except TxBroadcastError as e:
+            msg = e.get_message_for_gui()
+            print(msg)
+        except BestEffortRequestFailed as e:
+            msg = repr(e)
+            print(msg)
+        else:
+            print(_('Payment sent.'))
+            #self.do_clear()
+            #self.update_contacts_tab()

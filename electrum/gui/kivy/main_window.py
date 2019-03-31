@@ -369,7 +369,7 @@ class ElectrumWindow(App):
 
     @profiler
     def update_tabs(self):
-        for tab in ['invoices', 'send', 'history', 'receive', 'address']:
+        for tab in ['invoices', 'send', 'history', 'receive', 'address','omni_tokens']:
             self.update_tab(tab)
 
     def switch_to(self, name):
@@ -675,6 +675,7 @@ class ElectrumWindow(App):
         self.history_screen = None
         self.contacts_screen = None
         self.send_screen = None
+        self.send_omni_tokens_screen = None
         self.invoices_screen = None
         self.receive_screen = None
         self.requests_screen = None
