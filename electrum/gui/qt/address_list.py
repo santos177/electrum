@@ -221,6 +221,9 @@ class AddressList(MyTreeView):
         coins = self.wallet.get_spendable_coins(addrs, config=self.config)
         if coins:
             menu.addAction(_("Spend from"), lambda: self.parent.spend_coins(coins))
+        coins1 = self.wallet.get_spendable_coins(addrs, config=self.config)
+        if coins1:
+            menu.addAction(_("Spend Omni tokens from"), lambda: self.parent.spend_coins_for_omni(coins1))
 
         run_hook('receive_menu', menu, addrs, self.wallet)
         menu.exec_(self.viewport().mapToGlobal(position))
