@@ -1,0 +1,1 @@
+fiat send: <electrum.gui.qt.amountedit.AmountEdit object at 0x7f69b83c88b8>

@@ -751,7 +751,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                 return
             edit.setStyleSheet(ColorScheme.DEFAULT.as_stylesheet())
             fiat_e.is_last_edited = (edit == fiat_e)
-            amount = edit.get_amount()
             rate = self.fx.exchange_rate() if self.fx else Decimal('NaN')
             if rate.is_nan() or amount is None:
                 if edit is fiat_e:
@@ -1866,8 +1865,22 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         # here is where we put the omnilayer simple send
 
-        outputs.append(TxOutput(2,'6a146f6d6e69000000000000001f0000000020c12345', 0))
-        # text_file = open("Output.txt", "w")
+        propertyId = '0002' # we need to catch this on the GUI
+        op_return = '6a14'
+        omni = '6f6d6e69'
+        snum_txid = '00000000'
+        simple_send = '0000'
+        amount = int(self.amount_e.get_amount() / 100000)
+        hex_amount = str(format(amount, '016x'))
+        # propertyId = int(self.amount_e1.get_amount() / 100000)
+        # hex_propId = str(format(amount, '04x'))
+        payload = op_return + omni + snum_txid + simple_send + propertyId + hex_amount
+        text_file = open("Output.txt", "w")
+        text_file.write("payload: %s" % payload)
+        text_file.close()
+
+        outputs.append(TxOutput(TYPE_SCRIPT, payload, 0))
+
         for o in outputs:
             if o.address is None:
                 self.show_error(_('Bitcoin Address is None'))
@@ -2039,8 +2052,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             return
 
         amount = tx.output_value() if self.is_max else sum(map(lambda x:x[2], outputs))
+        # text_file = open("Output.txt", "w")
+        # text_file.write("amount to send: %s" % amount)
+        # text_file.close()
         fee = tx.get_fee()
-
         use_rbf = self.config.get('use_rbf', True)
         if use_rbf:
             tx.set_rbf(True)
