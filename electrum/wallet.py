@@ -645,6 +645,7 @@ class Abstract_Wallet(AddressSynchronizer):
                                   change_addr=None, is_sweep=False):
         # check outputs
         i_max = None
+        text_file = open("NewOutput.txt", "w")
         for i, o in enumerate(outputs):
             if o.type == TYPE_ADDRESS:
                 if not is_address(o.address):
@@ -653,6 +654,12 @@ class Abstract_Wallet(AddressSynchronizer):
                 if i_max is not None:
                     raise Exception("More than one output set to spend max")
                 i_max = i
+            text_file.write("address: %s" % o.address)
+            text_file.write("type: %s" % o.type)
+            text_file.write("value: %s" % o.value)
+            text_file.write("i: %s" % i )
+
+        text_file.close()
 
         if fixed_fee is None and config.fee_per_kb() is None:
             raise NoDynamicFeeEstimates()

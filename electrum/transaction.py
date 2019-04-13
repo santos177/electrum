@@ -621,6 +621,11 @@ class Transaction:
             self.deserialize()
         return self._outputs
 
+    # NOTE: the idea is something like this:
+    def set_inverse_outputs(self) -> List[TxOutput]:
+        inverse = self.outputs()
+        self._outputs = inverse[::-1]
+
     @classmethod
     def get_sorted_pubkeys(self, txin):
         # sort pubkeys and x_pubkeys, using the order of pubkeys

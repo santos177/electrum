@@ -1831,7 +1831,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             if o.value is None:
                 self.show_error(_('Invalid Amount'))
                 return
-        # outputs.append((0, pay_script(TYPE_SCRIPT,'OP_RETURN 6f6d6e69000000000000001f0000000020c85580')))
         fee_estimator = self.get_send_fee_estimator()
         coins = self.get_coins()
         return outputs, fee_estimator, label, coins
@@ -2049,10 +2048,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             return
 
         amount = tx.output_value() if self.is_max else sum(map(lambda x:x[2], outputs))
-        # text_file = open("Output.txt", "w")
-        # text_file.write("amount to send: %s" % amount)
-        # text_file.close()
+    
         fee = tx.get_fee()
+
+        # NOTE: this is important to omnilayer protocol (sender is the first output, recipient is the second one)
+        tx.set_inverse_outputs()
+
         use_rbf = self.config.get('use_rbf', True)
         if use_rbf:
             tx.set_rbf(True)
@@ -2098,6 +2099,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             password = None
             if not self.question('\n'.join(msg)):
                 return
+
 
         def sign_done(success):
             if success:
